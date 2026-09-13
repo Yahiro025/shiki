@@ -228,34 +228,40 @@ export function createTransformerFactory(
             continue
           }
 
-          const tokens = locateTextTokens(node.line, node.character, node.length)
+          // Syntax errors such as TS1005 (')' expected) can be reported past
+          // the last highlighted line. Map those onto the last source line.
+          const { line, character } = resolveLinePosition(node.line, node.character, this.lines)
+          const tokens = locateTextTokens(line, character, node.length)
 
-          if (!tokens.length && !(node.type === 'error' && renderer.nodesError)) {
+          if (!tokens.length && !(node.type === 'error' && (renderer.nodesError || renderer.lineError))) {
             onShikiError(new ShikiTwoslashError(`Cannot find tokens for node: ${JSON.stringify(node)}`), this.source, this.options.lang)
             continue
           }
 
           // Wrap tokens with new elements, all tokens has to be in the same line
           const wrapTokens = (fn: (children: ElementContent[]) => ElementContent[]): void => {
-            const line = this.lines[node.line]
+            const lineEl = this.lines[line]
+            if (!lineEl)
+              return
+
             let charIndex = 0
-            let itemStart = line.children.length
+            let itemStart = lineEl.children.length
             let itemEnd = 0
 
-            line.children.forEach((token, index) => {
-              if (charIndex >= node.character && index < itemStart)
+            lineEl.children.forEach((token, index) => {
+              if (charIndex >= character && index < itemStart)
                 itemStart = index
-              if ((charIndex <= node.character + node.length) && index > itemEnd)
+              if ((charIndex <= character + node.length) && index > itemEnd)
                 itemEnd = index
               charIndex += getTokenString(token).length
             })
 
-            if ((charIndex <= node.character + node.length))
-              itemEnd = line.children.length
+            if (charIndex <= character + node.length)
+              itemEnd = lineEl.children.length
 
-            const targets = line.children.slice(itemStart, itemEnd)
+            const targets = lineEl.children.slice(itemStart, itemEnd)
             const length = targets.length
-            line.children.splice(itemStart, length, ...fn(targets))
+            lineEl.children.splice(itemStart, length, ...fn(targets))
           }
 
           switch (node.type) {
@@ -276,7 +282,7 @@ export function createTransformerFactory(
                 })
               }
               if (renderer.lineError)
-                insertAfterLine(node.line, renderer.lineError.call(this, node))
+                insertAfterLine(line, renderer.lineError.call(this, node))
               break
             }
             case 'query': {
@@ -287,7 +293,7 @@ export function createTransformerFactory(
                 Object.assign(token, renderer.nodeQuery!.call(this, node, clone))
               }
               if (renderer.lineQuery)
-                insertAfterLine(node.line, renderer.lineQuery.call(this, node, token))
+                insertAfterLine(line, renderer.lineQuery.call(this, node, token))
               break
             }
             case 'completion': {
@@ -299,7 +305,7 @@ export function createTransformerFactory(
                 })
               }
               if (renderer.lineCompletion)
-                insertAfterLine(node.line, renderer.lineCompletion.call(this, node))
+                insertAfterLine(line, renderer.lineCompletion.call(this, node))
               break
             }
             case 'highlight': {
@@ -336,6 +342,27 @@ export function createTransformerFactory(
         actionsHighlights.forEach(i => i())
       },
     }
+  }
+}
+
+function resolveLinePosition(
+  line: number,
+  character: number,
+  lines: Element[],
+): { line: number, character: number } {
+  if (line >= 0 && line < lines.length)
+    return { line, character }
+
+  let index = lines.length - 1
+  while (index > 0 && !lines[index].children.length)
+    index--
+
+  if (index < 0)
+    return { line, character }
+
+  return {
+    line: index,
+    character: lines[index].children.reduce((sum, token) => sum + getTokenString(token).length, 0),
   }
 }
 
